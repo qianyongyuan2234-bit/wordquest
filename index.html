@@ -2916,7 +2916,11 @@ function saveState(){
 function loadState(){
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(!raw) return;
+    if(!raw){
+      // 首次使用，标记今天已签到
+      S.lastDay = new Date().toDateString();
+      return;
+    }
     const save = JSON.parse(raw);
     // 恢复状态
     if(save.S){
@@ -3174,10 +3178,6 @@ function finishLevel(){
   if(!prev){ S.levelsDone++; S.wordsLearned+=total; }
   if(!prev || stars>prev.stars) S.doneLevels[key]={stars};
   if(perfect) S.perfects++;
-
-  // 今日签到
-  const today = new Date().toDateString();
-  if(S.lastDay !== today){ S.lastDay = today; S.streak++; }
 
   const bonus = perfect?50:20;
   addCoins(bonus); addXP(perfect?40:25);
