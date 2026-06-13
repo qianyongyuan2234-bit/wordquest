@@ -1,0 +1,16 @@
+{
+  "name": "词海远征 · WordQuest",
+  "short_name": "词海远征",
+  "description": "初中英语单词闯关游戏 - 人教版全5册",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0b1026",
+  "theme_color": "#0b1026",
+  "orientation": "portrait",
+  "icons": [{
+    "src": "icon.svg",
+    "sizes": "192x192",
+    "type": "image/svg+xml",
+    "purpose": "any maskable"
+  }]
+}
