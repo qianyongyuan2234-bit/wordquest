@@ -40,7 +40,7 @@
   .star{position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;opacity:.5;animation:tw 3s infinite ease-in-out}
   @keyframes tw{0%,100%{opacity:.2}50%{opacity:.9}}
 
-  .wrap{position:relative;z-index:1;max-width:760px;margin:0 auto;padding:18px 16px 64px}
+  .wrap{position:relative;z-index:1;max-width:760px;margin:0 auto;padding:calc(18px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) calc(64px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px))}
 
   /* 顶栏 */
   .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
