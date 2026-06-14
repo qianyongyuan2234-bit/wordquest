@@ -119,10 +119,10 @@
   .opt.dim{opacity:.4}
 
   .typewrap{display:flex;gap:10px;margin-top:6px}
-  .typewrap input{flex:1;padding:15px 18px;border-radius:14px;background:var(--ink-3);border:1px solid var(--line);
+  .typewrap input{flex:1;min-width:0;padding:15px 18px;border-radius:14px;background:var(--ink-3);border:1px solid var(--line);
     color:var(--paper);font-size:18px;font-weight:700;text-align:center;letter-spacing:2px}
   .typewrap button{padding:0 22px;border-radius:14px;border:none;background:linear-gradient(135deg,var(--gold),var(--gold-deep));
-    color:#3a2400;font-weight:800;cursor:pointer}
+    color:#3a2400;font-weight:800;cursor:pointer;flex-shrink:0;white-space:nowrap}
 
   /* 结算 */
   .result{display:none;text-align:center;padding:30px 20px}
