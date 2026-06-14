@@ -3176,7 +3176,6 @@ function renderQuestion(){
     const opts=shuffle([w, ...distractors(w,'zh')]);
     card.innerHTML=`<div class="qtype">选出正确的中文</div>
       <div class="qword">${w.w}</div><div class="qphon">${w.ph}</div>
-      <div class="qsub" style="margin-bottom:0">${shortZh(w.zh)}</div>
       <div class="opts" style="margin-top:18px">${opts.map(o=>`<div class="opt" data-ok="${o.zh===w.zh}">${shortZh(o.zh)}</div>`).join('')}</div>`;
     bindOpts(w);
   }
