@@ -242,6 +242,10 @@
   <div class="panel" id="panel-badge">
     <div class="section-title">成就徽章</div>
     <div class="badges" id="badgeGrid"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn" style="flex:1;font-size:13px;padding:11px 16px" onclick="exportProgress()">📤 导出进度</button>
+      <button class="btn ghost" style="flex:1;font-size:13px;padding:11px 16px" onclick="importProgress()">📥 导入进度</button>
+    </div>
   </div>
 
 </div>
@@ -2895,13 +2899,63 @@ const BADGE_DEFS = [
   {id:"levels10", em:"🗺️", name:"通关10关", cond:s=>s.levelsDone>=10}
 ];
 
+/* ============ 可拼写判定 ============ */
+function isSpellable(word){
+  const w = word.w;
+  // 必须是单个单词、纯英文字母、长度3~18
+  if(!/^[A-Za-z]{3,18}$/.test(w)) return false;
+  // 排除全大写缩写（如 WWF、BBC、NBA、DVD）
+  if(w === w.toUpperCase()) return false;
+  // 排除人名（首字母大写且长度<=6，通常是人名/月份/星期等专有名词）
+  // 保留月份/星期等常见词（这些走选择题更合适，不走拼写）
+  if(/^[A-Z]/.test(w) && w.length <= 6) return false;
+  return true;
+}
+
+/* ============ SRS Leitner 间隔复习 ============ */
+// box 0→1天, 1→2天, 2→4天, 3→7天, 4→15天, 5→30天
+const SRS_INTERVALS = [1, 2, 4, 7, 15, 30];
+
+function srsKey(w){ return w.w; }
+
+function srsUpdate(mem, wordObj, correct){
+  const key = srsKey(wordObj);
+  const now = Date.now();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayMs = today.getTime();
+  if(!mem[key]){
+    mem[key] = {box:0, nextReview: todayMs + SRS_INTERVALS[0]*86400000,
+                errorCount:0, w:wordObj.w, ph:wordObj.ph, zh:wordObj.zh};
+  }
+  const entry = mem[key];
+  if(correct){
+    entry.box = Math.min(5, entry.box + 1);
+    entry.nextReview = todayMs + SRS_INTERVALS[entry.box]*86400000;
+  } else {
+    entry.errorCount = (entry.errorCount||0) + 1;
+    entry.box = 0;
+    entry.nextReview = todayMs + SRS_INTERVALS[0]*86400000;
+  }
+}
+
+function srsGetDueWords(){
+  const todayMs = (() => { const d=new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const mem = S.memory || {};
+  const due = Object.values(mem).filter(e => e.nextReview <= todayMs + 86400000);
+  // 优先: box低 → errorCount多
+  due.sort((a,b) => a.box - b.box || (b.errorCount||0) - (a.errorCount||0));
+  return due;
+}
+
 /* ============ 状态（localStorage 持久化） ============ */
 const STORAGE_KEY = 'wordquest_save';
 let S = {
   coins:0, xp:0, level:1, streak:1,
   maxCombo:0, perfects:0, levelsDone:0, wordsLearned:0,
   doneLevels:{}, badges:{}, lastDay:null,
-  wrongWords:[]
+  wrongWords:[],
+  memory:{},          // SRS 记忆表
+  streakUpdatedToday:false  // streak 只在答题时结算
 };
 
 function saveState(){
@@ -2928,19 +2982,27 @@ function loadState(){
       // 兼容旧存档没有的字段
       if(!S.wrongWords) S.wrongWords = [];
       if(!S.lastDay) S.lastDay = null;
+      if(!S.memory) S.memory = {};                     // SRS兼容
+      if(S.streakUpdatedToday === undefined) S.streakUpdatedToday = false;
     }
     if(save.ME_pts !== undefined) ME.pts = save.ME_pts;
-    // 检查连续天数
+    // loadState 只判断是否断签清零，不+1
     const today = new Date().toDateString();
     if(S.lastDay){
       const yesterday = new Date(Date.now()-86400000).toDateString();
-      if(S.lastDay === yesterday){ S.streak++; S.lastDay = today; }
-      else if(S.lastDay === today){ /* 今天已签到 */ }
-      else { S.streak = 1; S.lastDay = today; }
+      if(S.lastDay === today){
+        // 今天已经结算过，什么都不做
+      } else if(S.lastDay === yesterday){
+        // 昨天有学，连续保持，等今天答题再+1
+        S.streakUpdatedToday = false;
+      } else {
+        // 断签，清零
+        S.streak = 0;
+        S.streakUpdatedToday = false;
+      }
     } else {
       S.lastDay = today;
     }
-    saveState(); // 更新 streak
     return true;
   } catch(e){ return false; }
 }
@@ -2950,6 +3012,38 @@ function resetProgress(){
     localStorage.removeItem(STORAGE_KEY);
     location.reload();
   }
+}
+
+/* ============ 进度导出/导入 ============ */
+function exportProgress(){
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw){ alert('暂无存档可导出'); return; }
+    const blob = new Blob([raw], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'wordquest_save_' + new Date().toISOString().slice(0,10) + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch(e){ alert('导出失败: '+e.message); }
+}
+function importProgress(){
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.json';
+  inp.onchange = () => {
+    const file = inp.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        JSON.parse(e.target.result); // 验证 JSON 合法
+        localStorage.setItem(STORAGE_KEY, e.target.result);
+        alert('导入成功，即将刷新');
+        location.reload();
+      } catch(err){ alert('文件格式错误，导入失败'); }
+    };
+    reader.readAsText(file);
+  };
+  inp.click();
 }
 
 function xpNeed(lv){ return 100 + (lv-1)*60; }
@@ -3016,55 +3110,100 @@ function startLevel(i){
   renderQuestion();
 }
 
+/* 干扰项算法：同词性/形近/长度相近优先 */
+function extractPos(zh){
+  // 从释义前缀粗略提取词性
+  const m = zh.match(/^(n\.|v\.|vt\.|vi\.|adj\.|adv\.|conj\.|prep\.|pron\.|num\.|int\.|aux\.|abbr\.)/);
+  return m ? m[1] : '';
+}
 function distractors(correctWord, field){
-  // 从全词库随机取干扰项
   const pool=[];
   for(const g in VOCAB) for(const u in VOCAB[g]) pool.push(...VOCAB[g][u]);
-  const others=pool.filter(x=>x[field]!==correctWord[field]);
-  const pick=[];
-  while(pick.length<3 && others.length){
-    const k=Math.floor(Math.random()*others.length);
-    pick.push(others.splice(k,1)[0]);
+
+  // 按 field 去重（避免重复展示文本）
+  const seen = new Set([correctWord[field]]);
+  const deduped = pool.filter(x => {
+    if(seen.has(x[field])) return false;
+    seen.add(x[field]);
+    return true;
+  });
+
+  const correctPos = extractPos(correctWord.zh);
+  const correctLen = correctWord.w.length;
+
+  // 按优先级分桶：同词性 > 长度相近(±2) > 其余
+  const tier1=[], tier2=[], tier3=[];
+  for(const x of deduped){
+    const pos = extractPos(x.zh);
+    const lenDiff = Math.abs(x.w.length - correctLen);
+    if(pos && pos === correctPos) tier1.push(x);
+    else if(lenDiff <= 2) tier2.push(x);
+    else tier3.push(x);
   }
-  return pick;
+
+  const pick=[];
+  const tryPick = (arr) => {
+    const sh = shuffle(arr);
+    for(const x of sh){
+      if(pick.length >= 3) break;
+      pick.push(x);
+    }
+  };
+  tryPick(tier1); tryPick(tier2); tryPick(tier3);
+  return pick.slice(0,3);
+}
+
+/* 截断长释义，只显示主义项 */
+function shortZh(zh){
+  // 取第一个 "; " 或第一个 "；" 前的内容，超24字加省略号
+  let s = zh.split(/；|; /)[0].trim();
+  if(s.length > 24) s = s.slice(0,22) + '…';
+  return s;
 }
 
 function renderQuestion(){
   const card=document.getElementById('qcard');
   const w=Q.words[Q.idx];
-  const type=TYPES[Math.floor(Math.random()*TYPES.length)];
   document.getElementById('qprogFill').style.width=(Q.idx/Q.words.length*100)+'%';
   document.getElementById('comboView').textContent=Q.combo>=2?`🔥 ${Q.combo} 连击`:'';
+
+  // 可拼写词才走拼写/听写题型
+  const spellable = isSpellable(w);
+  const availableTypes = spellable ? TYPES : TYPES.filter(t => t!=='拼写' && t!=='听写');
+  const type = availableTypes[Math.floor(Math.random()*availableTypes.length)];
 
   if(type==="见英选中"){
     const opts=shuffle([w, ...distractors(w,'zh')]);
     card.innerHTML=`<div class="qtype">选出正确的中文</div>
       <div class="qword">${w.w}</div><div class="qphon">${w.ph}</div>
-      <div class="opts">${opts.map(o=>`<div class="opt" data-ok="${o.zh===w.zh}">${o.zh}</div>`).join('')}</div>`;
+      <div class="qsub" style="margin-bottom:0">${shortZh(w.zh)}</div>
+      <div class="opts" style="margin-top:18px">${opts.map(o=>`<div class="opt" data-ok="${o.zh===w.zh}">${shortZh(o.zh)}</div>`).join('')}</div>`;
     bindOpts(w);
   }
   else if(type==="见中选英"){
     const opts=shuffle([w, ...distractors(w,'w')]);
     card.innerHTML=`<div class="qtype">选出正确的单词</div>
-      <div class="qword" style="font-size:30px">${w.zh}</div>
-      <div class="opts">${opts.map(o=>`<div class="opt" data-ok="${o.w===w.w}">${o.w}</div>`).join('')}</div>`;
+      <div class="qword" style="font-size:24px;line-height:1.4">${w.zh}</div>
+      <div class="opts" style="margin-top:18px">${opts.map(o=>`<div class="opt" data-ok="${o.w===w.w}">${o.w}</div>`).join('')}</div>`;
     bindOpts(w);
   }
   else if(type==="听音选词"){
     const opts=shuffle([w, ...distractors(w,'w')]);
+    // iOS：不强制自动播放，确保按钮可见；有手势后尝试自动
     card.innerHTML=`<div class="qtype">听发音，选单词</div>
       <button class="speak" id="speakBtn">🔊 播放发音</button>
-      <div class="opts">${opts.map(o=>`<div class="opt" data-ok="${o.w===w.w}">${o.w}</div>`).join('')}</div>`;
+      <div class="opts" style="margin-top:6px">${opts.map(o=>`<div class="opt" data-ok="${o.w===w.w}">${o.w}</div>`).join('')}</div>`;
     document.getElementById('speakBtn').onclick=()=>speak(w.w);
-    speak(w.w);
+    // 只在用户已有过交互后才尝试自动播放（iOS需要手势）
+    if(window._userHasInteracted){ try{ speak(w.w); } catch(e){} }
     bindOpts(w);
   }
-  else if(type==="拼写"){ // 拼写
+  else if(type==="拼写"){
     card.innerHTML=`<div class="qtype">根据中文拼写单词</div>
-      <div class="qword" style="font-size:28px">${w.zh}</div>
+      <div class="qword" style="font-size:24px;line-height:1.4">${w.zh}</div>
       <div class="qsub">${w.ph}　首字母：${w.w[0]}…</div>
       <div class="typewrap">
-        <input id="spellInput" autocomplete="off" placeholder="输入英文" />
+        <input id="spellInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="输入英文" />
         <button id="spellBtn">确定</button>
       </div>`;
     const inp=document.getElementById('spellInput');
@@ -3073,16 +3212,17 @@ function renderQuestion(){
     document.getElementById('spellBtn').onclick=submit;
     inp.onkeydown=e=>{if(e.key==='Enter')submit();};
   }
-  else if(type==="听写"){ // 听发音，拼写单词
+  else if(type==="听写"){
+    // 同听音选词，不强制自动播放
     card.innerHTML=`<div class="qtype">听发音，拼写单词</div>
       <button class="speak" id="speakBtn2">🔊 播放发音 (可重复点击)</button>
       <div class="typewrap" style="margin-top:12px">
-        <input id="spellInput" autocomplete="off" placeholder="输入你听到的单词" />
+        <input id="spellInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="输入你听到的单词" />
         <button id="spellBtn">确定</button>
       </div>
       <div class="qsub" style="margin-top:8px">提示：首字母 ${w.w[0]}…　共 ${w.w.length} 个字母</div>`;
     document.getElementById('speakBtn2').onclick=()=>speak(w.w);
-    speak(w.w);
+    if(window._userHasInteracted){ try{ speak(w.w); } catch(e){} }
     const inp=document.getElementById('spellInput');
     inp.focus();
     const submit=()=>judge(inp.value.trim().toLowerCase()===w.w.toLowerCase(), w, null);
@@ -3107,23 +3247,41 @@ function bindOpts(w){
 }
 
 function judge(ok, w, el){
+  // 标记用户已交互，后续可自动播放
+  window._userHasInteracted = true;
+
   if(ok){
     Q.combo++; Q.correct++;
     S.maxCombo=Math.max(S.maxCombo,Q.combo);
-    // 错词本：答对了则从错词本移除
-    S.wrongWords = S.wrongWords.filter(ww => ww.w !== w.w);
+    // SRS：答对升格，不再从错词本"删除"
+    srsUpdate(S.memory, w, true);
+    // 错词本记录：答对则将该词标记为已掌握（保留记录供统计，但不作为复习候选）
+    const ww = S.wrongWords.find(ww => ww.w === w.w);
+    if(ww) ww.mastered = true;
     const gain=10+(Q.combo>=2?Q.combo*2:0);
     floatText('+'+gain+' 🪙');
     addCoins(gain); addXP(8);
+    // streak：只在当天首次成功答题时结算
+    const today = new Date().toDateString();
+    if(!S.streakUpdatedToday){
+      S.streakUpdatedToday = true;
+      if(S.lastDay !== today){
+        S.streak++;
+        S.lastDay = today;
+      }
+    }
   } else {
     Q.combo=0;
     floatText('再背一遍！', 'var(--coral)');
-    // 错词本：记录答错的词
-    if(!S.wrongWords.find(ww => ww.w === w.w)){
-      S.wrongWords.push({w:w.w, ph:w.ph, zh:w.zh, wrongCount:1});
+    // SRS：答错降格
+    srsUpdate(S.memory, w, false);
+    // 错词本：记录答错的词（兼容旧字段）
+    const existing = S.wrongWords.find(ww => ww.w === w.w);
+    if(!existing){
+      S.wrongWords.push({w:w.w, ph:w.ph, zh:w.zh, wrongCount:1, mastered:false});
     } else {
-      const ww = S.wrongWords.find(ww => ww.w === w.w);
-      ww.wrongCount++;
+      existing.wrongCount = (existing.wrongCount||0) + 1;
+      existing.mastered = false;
     }
     // 拼写错时给正确答案提示
     if(el===null){
@@ -3149,10 +3307,12 @@ function next(){
       const total = Q.words.length, correct = Q.correct;
       const r = document.getElementById('result');
       r.classList.add('show');
+      // 计算还剩多少SRS到期词
+      const remainDue = srsGetDueWords().length + S.wrongWords.filter(ww=>!ww.mastered && !Object.keys(S.memory).includes(ww.w)).length;
       r.innerHTML=`
         <div class="big">${correct===total?'🎉':'💪'}</div>
-        <h2>错词复习完成</h2>
-        <p>答对 ${correct} / ${total}，还剩 ${S.wrongWords.length} 个错词</p>
+        <h2>今日复习完成</h2>
+        <p>答对 ${correct} / ${total}，今日还剩约 ${Math.max(0,remainDue)} 词待复习</p>
         <button class="btn" id="againReviewBtn">再复习一轮</button>
         <button class="btn ghost" id="backBtn2">回到地图</button>`;
       document.getElementById('againReviewBtn').onclick=()=>{ r.classList.remove('show'); startReview(); };
@@ -3251,11 +3411,14 @@ let BOARD=[
 function renderBoard(){
   const list=[...BOARD].sort((a,b)=>b.pts-a.pts);
   const el=document.getElementById('boardList');
-  el.innerHTML=list.map((p,i)=>`
+  // 明确标注为AI陪练榜样，不伪装真实多人在线
+  el.innerHTML=`<div style="font-size:12px;color:var(--muted);margin-bottom:10px;padding:8px 12px;background:var(--ink-2);border-radius:10px;border:1px solid var(--line)">
+    🤖 AI 陪练榜 · 仅供参考，非真实多人对战。「我」按真实积分排名。
+  </div>`+list.map((p,i)=>`
     <div class="rank ${p.me?'me':''} ${i===0?'top1':i===1?'top2':i===2?'top3':''}">
       <div class="pos">${i<3?['🥇','🥈','🥉'][i]:i+1}</div>
       <div class="av">${p.av}</div>
-      <div class="info"><b>${p.name}</b><span>${p.pts} 积分</span></div>
+      <div class="info"><b>${p.name}</b><span>${p.pts} 积分${p.me?'':' · AI陪练'}</span></div>
       <div class="pts">${p.pts}</div>
     </div>`).join('');
 }
@@ -3276,13 +3439,23 @@ function checkBadges(){
   if(newOne){ renderBadges(); floatText('🎖️ 新徽章！','var(--gold)'); }
 }
 
-/* ============ 错词复习 ============ */
+/* ============ SRS今日复习 + 错词优先级排序 ============ */
 function updateReviewBtn(){
   const btn = document.getElementById('reviewBtn');
   const cnt = document.getElementById('wrongCount');
-  if(S.wrongWords.length > 0){
+  // 今日到期词 + 未掌握错词合并
+  const dueWords = srsGetDueWords();
+  const legacyWrong = S.wrongWords.filter(ww => !ww.mastered);
+  // 合并去重（SRS中有的优先，legacy补充）
+  const srsKeys = new Set(dueWords.map(e=>e.w));
+  const combined = [...dueWords];
+  for(const ww of legacyWrong){
+    if(!srsKeys.has(ww.w)) combined.push(ww);
+  }
+  const total = combined.length;
+  if(total > 0){
     btn.style.display = 'inline-block';
-    cnt.textContent = S.wrongWords.length;
+    cnt.textContent = total;
   } else {
     btn.style.display = 'none';
   }
@@ -3290,18 +3463,33 @@ function updateReviewBtn(){
 
 let REVIEW_MODE = false;
 function startReview(){
-  if(S.wrongWords.length === 0){ alert('没有错词需要复习！🎉'); return; }
+  // SRS到期词 + 旧错词，按 box↑ errorCount↓ 排序
+  const dueWords = srsGetDueWords();
+  const legacyWrong = S.wrongWords.filter(ww => !ww.mastered);
+  const srsKeys = new Set(dueWords.map(e=>e.w));
+  const combined = [...dueWords];
+  for(const ww of legacyWrong){
+    if(!srsKeys.has(ww.w)) combined.push(ww);
+  }
+
+  if(combined.length === 0){ alert('今日暂无需要复习的词！🎉 稍后再来~'); return; }
+
+  // 优先取 box低、错次数多的（srsGetDueWords已排序，legacy补在后面）
+  // 每次最多出10题
+  const per = Math.min(10, combined.length);
+  const reviewWords = combined.slice(0, per).map(e => ({
+    w: e.w, ph: e.ph||'', zh: e.zh||''
+  }));
+
   REVIEW_MODE = true;
-  const shuffled = shuffle([...S.wrongWords]);
-  const per = Math.min(5, shuffled.length);
-  Q = {words: shuffled.slice(0, per), idx:0, combo:0, correct:0, levelIdx:0};
+  Q = {words: reviewWords, idx:0, combo:0, correct:0, levelIdx:0};
   document.getElementById('map').style.display='none';
   document.querySelector('.selectors').style.display='none';
   document.querySelector('#panel-map .section-title').style.display='none';
   document.getElementById('result').classList.remove('show');
   document.getElementById('quiz').classList.add('show');
   document.getElementById('qprogFill').style.width='0%';
-  document.getElementById('comboView').textContent='📝 错词复习';
+  document.getElementById('comboView').textContent='📝 今日复习';
   renderQuestion();
 }
 
@@ -3340,6 +3528,12 @@ document.getElementById('xpNeedView').textContent=xpNeed(S.level);
 document.getElementById('xpFill').style.width=(S.xp/xpNeed(S.level)*100)+'%';
 if(S.badges) renderBadges();
 updateReviewBtn();
+
+/* 全局捕获首次用户交互，标记后听音题可自动播放 */
+window._userHasInteracted = false;
+['touchstart','mousedown','keydown'].forEach(evt=>{
+  document.addEventListener(evt, ()=>{ window._userHasInteracted=true; }, {once:true, passive:true});
+});
 
 /* 注册 Service Worker（离线缓存） */
 if('serviceWorker' in navigator){
